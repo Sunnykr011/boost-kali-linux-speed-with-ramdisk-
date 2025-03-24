@@ -1,0 +1,99 @@
+#!/bin/bash
+# ==============================================
+# RAMDISK BACKUP SYSTEM - PART 2/2
+# ==============================================
+# Handles automatic saving of RAMDisk contents
+# Works with ramdisk_setup.sh
+
+# Configuration
+MOUNT_POINT="/mnt/ramdisk"       # Must match setup script
+BACKUP_DIR="/opt/ramdisk_backups" # Where to save backups
+MAX_BACKUPS=5                     # Number of backups to keep
+LOG_FILE="/var/log/ramdisk.log"   # Must match setup script
+
+# Initialize logging
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Create backup
+create_backup() {
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local backup_path="$BACKUP_DIR/$timestamp"
+    
+    mkdir -p "$backup_path" || {
+        log "ERROR: Failed to create backup directory"
+        return 1
+    }
+    
+    log "Creating backup at $backup_path"
+    rsync -aq --delete "$MOUNT_POINT/" "$backup_path/" || {
+        log "ERROR: Backup failed"
+        return 1
+    }
+    
+    log "Backup completed successfully"
+}
+
+# Rotate old backups
+rotate_backups() {
+    local backups=($(ls -1t "$BACKUP_DIR" 2>/dev/null))
+    local count=${#backups[@]}
+    
+    if [ "$count" -gt "$MAX_BACKUPS" ]; then
+        local to_delete=$((count - MAX_BACKUPS))
+        log "Rotating backups - removing $to_delete old backups"
+        
+        for ((i=MAX_BACKUPS; i<count; i++)); do
+            rm -rf "${BACKUP_DIR}/${backups[$i]}"
+        done
+    fi
+}
+
+# Restore from backup
+restore_backup() {
+    local backup_path="$1"
+    
+    if [ ! -d "$backup_path" ]; then
+        log "ERROR: Backup directory $backup_path not found"
+        return 1
+    fi
+    
+    log "Restoring from backup at $backup_path"
+    rsync -aq --delete "$backup_path/" "$MOUNT_POINT/" || {
+        log "ERROR: Restore failed"
+        return 1
+    }
+    
+    log "Restore completed successfully"
+}
+
+# Main execution
+main() {
+    case "$1" in
+        create)
+            create_backup
+            rotate_backups
+            ;;
+        restore)
+            if [ -z "$2" ]; then
+                echo "Usage: $0 restore [backup_timestamp]"
+                exit 1
+            fi
+            restore_backup "$BACKUP_DIR/$2"
+            ;;
+        list)
+            echo "Available backups:"
+            ls -1t "$BACKUP_DIR" 2>/dev/null
+            ;;
+        *)
+            echo "Usage:"
+            echo "  $0 create       - Create new backup"
+            echo "  $0 restore [id] - Restore specific backup"
+            echo "  $0 list         - List available backups"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
