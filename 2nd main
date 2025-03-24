@@ -1,0 +1,71 @@
+#!/bin/bash
+# ==============================================
+# RAMDISK SETUP FOR BUG BOUNTY - PART 1/2
+# ==============================================
+# Creates high-performance RAMDisk workspace
+# Safe for Kali Linux - no security reductions
+
+# Configuration
+RAMDISK_SIZE="70%"               # Percentage of available RAM
+MOUNT_POINT="/mnt/ramdisk"       # Mount point
+WORKSPACE="$MOUNT_POINT/workspace"  # Working directory
+LOG_FILE="/var/log/ramdisk.log"  # Log file
+MIN_MEMORY=1024                  # Minimum RAM to leave free (MB)
+
+# Initialize logging
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Check available memory
+check_memory() {
+    local available_mem=$(free -m | awk '/Mem:/ {print $7}')
+    if [ "$available_mem" -lt "$MIN_MEMORY" ]; then
+        log "ERROR: Insufficient memory (${available_mem}MB free, ${MIN_MEMORY}MB required)"
+        exit 1
+    fi
+}
+
+# Create RAMDisk
+create_ramdisk() {
+    log "Creating RAMDisk at $MOUNT_POINT with size $RAMDISK_SIZE"
+    
+    mkdir -p "$MOUNT_POINT" || {
+        log "ERROR: Failed to create mount point"
+        exit 1
+    }
+    
+    mount -t tmpfs -o "size=$RAMDISK_SIZE,noatime,nodev,nosuid,noexec" tmpfs "$MOUNT_POINT" || {
+        log "ERROR: Failed to mount RAMDisk"
+        exit 1
+    }
+    
+    mkdir -p "$WORKSPACE" && chmod 700 "$WORKSPACE" || {
+        log "ERROR: Failed to create workspace"
+        exit 1
+    }
+    
+    ln -sf "$WORKSPACE" ~/ramdisk_workspace 2>/dev/null
+    log "RAMDisk created successfully"
+}
+
+# Optimize system performance
+optimize_system() {
+    # Conservative kernel tweaks (safe for Kali)
+    sysctl -w vm.swappiness=10 >/dev/null
+    sysctl -w vm.vfs_cache_pressure=50 >/dev/null
+    sysctl -w fs.file-max=524288 >/dev/null
+    ulimit -n 524288
+    
+    log "Applied system optimizations"
+}
+
+# Main execution
+main() {
+    check_memory
+    create_ramdisk
+    optimize_system
+    log "RAMDisk setup complete. Use ~/ramdisk_workspace for fast operations"
+}
+
+main "$@"
