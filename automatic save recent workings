@@ -1,0 +1,212 @@
+#!/bin/bash
+# ==============================================
+# ULTIMATE AUTOMATED BUG BOUNTY RAMDISK SYSTEM
+# ==============================================
+
+# ---- Configuration ----
+: "${LOG_FILE:=/var/log/auto-bounty.log}"
+: "${CONFIG_FILE:=/etc/auto-bounty.conf}"
+: "${RAMDISK_MOUNT:=/mnt/ramdisk}"
+: "${PERSISTENT_STORE:=/mnt/persistent}"
+: "${TOOLS_DIR:=/opt/tools}"
+: "${TARGETS_FILE:=/etc/targets.list}"
+: "${RAM_PERCENTAGE:=55}"  # Conservative for 4GB systems
+: "${MIN_RAM_SAFETY:=384}" # 384MB minimum safety margin
+: "${AUTO_SAVE_INTERVAL:=30}" # Minutes between auto-saves
+
+# ---- Tool Optimization Profiles ----
+declare -A TOOL_PROFILES=(
+    ["nuclei"]="nice -n 19 taskset -c 0"
+    ["ffuf"]="nice -n 19 taskset -c 1"
+    ["amass"]="nice -n 15 ionice -c3"
+    ["masscan"]="nice -n 10"
+)
+
+# ---- System Service Setup ----
+SERVICE_FILE="/etc/systemd/system/auto-bounty.service"
+TIMER_FILE="/etc/systemd/system/auto-bounty.timer"
+
+# ========================
+# CORE FUNCTIONS
+# ========================
+
+function init_system() {
+    setup_logging
+    check_dependencies
+    configure_system
+    mount_ramdisk
+    deploy_tools
+    setup_auto_persistence
+    start_daemon
+    run_optimized_tools
+}
+
+function configure_system() {
+    # Kernel optimizations
+    sysctl vm.swappiness=5 >/dev/null
+    ulimit -n $((2**16))
+    
+    # Network tweaks
+    sysctl net.ipv4.tcp_fastopen=3 >/dev/null
+    sysctl net.core.somaxconn=8192 >/dev/null
+    
+    # Disk optimizations
+    mount -o remount,noatime /
+    blockdev --setra 16384 /dev/sda 2>/dev/null || true
+    
+    log "SYSTEM" "Applied performance tweaks"
+}
+
+function mount_ramdisk() {
+    local mem_available=$(free -m | awk '/Mem:/ {print $7}')
+    local size=$((mem_available * RAM_PERCENTAGE / 100))
+    
+    (( size < MIN_RAM_SAFETY )) && {
+        log "ERROR" "Not enough RAM (${size}MB < ${MIN_RAM_SAFETY}MB min)"
+        exit 1
+    }
+    
+    mkdir -p "$RAMDISK_MOINT"
+    mount -t tmpfs -o "size=${size}M,noatime,nodev" tmpfs "$RAMDISK_MOUNT"
+    
+    # Structure for tools and data
+    mkdir -p "$RAMDISK_MOUNT"/{tools,scan_data}
+    log "RAMDISK" "Mounted ${size}MB RAM disk"
+}
+
+function deploy_tools() {
+    # Copy tools to RAM
+    rsync -aq --delete "$TOOLS_DIR/" "$RAMDISK_MOUNT/tools/"
+    
+    # Create optimized wrappers in /usr/local/bin
+    for tool in "${!TOOL_PROFILES[@]}"; do
+        cat > "/usr/local/bin/auto-$tool" <<EOF
+#!/bin/bash
+${TOOL_PROFILES[$tool]} "$RAMDISK_MOUNT/tools/$tool" "\$@" \\
+    | tee -a "$RAMDISK_MOUNT/scan_data/${tool}_\$(date +%s).log"
+EOF
+        chmod +x "/usr/local/bin/auto-$tool"
+    done
+    
+    log "TOOLS" "Deployed ${#TOOL_PROFILES[@]} optimized tools"
+}
+
+function setup_auto_persistence() {
+    mkdir -p "$PERSISTENT_STORE"
+    
+    # Systemd service for saving state
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Auto-Bounty Persistent State Saver
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'rsync -aq --delete "$RAMDISK_MOUNT/" "$PERSISTENT_STORE/"'
+EOF
+
+    # Systemd timer for periodic saving
+    cat > "$TIMER_FILE" <<EOF
+[Unit]
+Description=Auto-Bounty Save Timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${AUTO_SAVE_INTERVAL}min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now auto-bounty.timer
+    
+    # Restore on boot via rc.local
+    cat > /etc/rc.local <<EOF
+#!/bin/bash
+rsync -aq "$PERSISTENT_STORE/" "$RAMDISK_MOUNT/" &
+exit 0
+EOF
+    chmod +x /etc/rc.local
+    
+    log "PERSISTENCE" "Enabled automatic state saving every ${AUTO_SAVE_INTERVAL} minutes"
+}
+
+function run_optimized_tools() {
+    log "SCANNING" "Starting automated scans"
+    
+    while read -r target; do
+        for tool in "${!TOOL_PROFILES[@]}"; do
+            if [[ -x "$RAMDISK_MOUNT/tools/$tool" ]]; then
+                log "SCAN" "Running auto-$tool against $target"
+                "/usr/local/bin/auto-$tool" -u "$target" >/dev/null 2>&1 &
+            fi
+        done
+    done < "$TARGETS_FILE"
+    
+    log "SCANNING" "All tools running in background"
+}
+
+function start_daemon() {
+    # Resource monitoring daemon
+    nohup bash -c '
+    while true; do
+        mem_free=$(free -m | awk "/Mem:/ {print \$7}")
+        if (( mem_free < 256 )); then
+            logger -t AUTOBUNTY "Low RAM (\${mem_free}MB) - cleaning caches"
+            sync; echo 3 > /proc/sys/vm/drop_caches
+        fi
+        sleep 30
+    done' >/dev/null 2>&1 &
+    
+    log "DAEMON" "Started resource monitor"
+}
+
+# ========================
+# UTILITIES
+# ========================
+
+function setup_logging() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    log "SYSTEM" "Initializing Auto-Bounty System"
+}
+
+function check_dependencies() {
+    local deps=(rsync systemd crontab nice taskset ionice)
+    for cmd in "${deps[@]}"; do
+        if ! command -v "$cmd" >/dev/null; then
+            log "ERROR" "Missing dependency: $cmd"
+            exit 1
+        fi
+    done
+}
+
+function cleanup_emergency() {
+    log "EMERGENCY" "Performing cleanup"
+    pkill -f "$RAMDISK_MOUNT/tools/" || true
+    umount -l "$RAMDISK_MOUNT" 2>/dev/null || true
+    rm -rf "$RAMDISK_MOUNT"
+}
+
+function log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] $2"
+}
+
+# ========================
+# MAIN EXECUTION
+# ========================
+
+case "${1:-}" in
+    init)
+        init_system
+        ;;
+    *)
+        echo "Usage: $0 init"
+        echo "After initialization:"
+        echo "- Tools auto-run as 'auto-<toolname>'"
+        echo "- State saves automatically every ${AUTO_SAVE_INTERVAL} minutes"
+        echo "- All output logged to $LOG_FILE"
+        exit 1
+        ;;
+esac
