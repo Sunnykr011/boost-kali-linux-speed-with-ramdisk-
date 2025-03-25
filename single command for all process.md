@@ -1,8 +1,3 @@
-Here's the **simplest one-command solution** to make your RAMDisk setup fully automatic and persistent across reboots in Kali Linux:
-
-### **1. Combined Automatic Setup (Paste this single command):**
-
-```bash
 sudo bash -c 'cat > /usr/local/bin/ramdisk-manager <<"EOF"
 #!/bin/bash
 # Auto RAMDisk Manager for Kali Linux (Persistent)
@@ -12,7 +7,6 @@ RAMDISK_SIZE="70%"
 MOUNT_POINT="/mnt/ramdisk"
 WORKSPACE="$MOUNT_POINT/workspace"
 BACKUP_DIR="/opt/ramdisk_backups"
-MAX_BACKUPS=5
 LOG_FILE="/var/log/ramdisk.log"
 
 # Functions
@@ -87,26 +81,3 @@ EOF
 
 chmod +x /usr/local/bin/ramdisk-manager
 /usr/local/bin/ramdisk-manager install'
-```
-
-### **2. Usage:**
-After running the command above:
-- **RAMDisk auto-creates** on every boot
-- **Auto-backups** happen on shutdown/reboot
-- **Auto-restores** happen on startup
-- Access your fast workspace at: `~/ramdisk_workspace`
-
-### **Key Features:**
-1. **Fully Automatic** - No manual intervention needed after setup
-2. **Persistent Across Reboots** - Backups restore automatically
-3. **Clean Implementation** - Uses systemd for reliability
-4. **Logging** - Check `/var/log/ramdisk.log` for status
-
-### **To Uninstall:**
-```bash
-sudo systemctl disable ramdisk.service ramdisk-shutdown.service
-sudo rm /etc/systemd/system/ramdisk* /usr/local/bin/ramdisk-manager
-sudo umount /mnt/ramdisk 2>/dev/null
-```
-
-This maintains all the functionality of your original scripts while making it completely automatic with a single setup command. The RAMDisk will now persist seamlessly across reboots.
