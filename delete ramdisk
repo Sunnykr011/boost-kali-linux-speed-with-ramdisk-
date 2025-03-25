@@ -1,0 +1,3 @@
+sudo systemctl disable ramdisk.service ramdisk-shutdown.service
+sudo rm /etc/systemd/system/ramdisk* /usr/local/bin/ramdisk-manager
+sudo umount /mnt/ramdisk 2>/dev/null
